@@ -3,14 +3,15 @@ use std::time::Duration;
 
 use relm4::adw;
 use relm4::adw::prelude::*;
+use relm4::gtk::glib;
 use relm4::prelude::*;
-use tracing::{error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::config::device_settings::DeviceSettings;
 use crate::config::key_binding::KeyBinding;
 use crate::config::lighting::{LedConfig, LightMode, LightSpeed};
 use crate::device::connection::{DeviceConnection, MockConnection};
-use crate::device::detector::{DeviceInfo, enumerate_devices};
+use crate::device::detector::{DeviceInfo, plan_device_selection, refresh_and_enumerate_devices};
 use crate::device::model::DeviceModel;
 use crate::protocol::packet::Packet;
 use crate::ui::about_view::AboutViewState;
@@ -42,11 +43,14 @@ pub struct AppModel {
     pub advanced_view: Controller<AdvancedViewState>,
     pub about_view: Controller<AboutViewState>,
     toast_overlay: adw::ToastOverlay,
+    failed_auto_connect_path: Option<String>,
+    failed_auto_connect_attempts: u8,
 }
 
 #[derive(Debug)]
 pub enum AppMsg {
     RefreshDevices,
+    PollDevices,
     SelectDevice(usize),
     ToggleMock(bool),
     SelectMockModel(DeviceModel),
@@ -220,6 +224,8 @@ impl SimpleComponent for AppModel {
             advanced_view,
             about_view,
             toast_overlay: adw::ToastOverlay::new(),
+            failed_auto_connect_path: None,
+            failed_auto_connect_attempts: 0,
         };
 
         let widgets = view_output!();
@@ -258,6 +264,17 @@ impl SimpleComponent for AppModel {
             });
 
         widgets.stack.set_visible_child_name("keys");
+
+        let poll_sender = sender.input_sender().clone();
+        let weak_root = root.downgrade();
+        glib::timeout_add_local(Duration::from_millis(1000), move || {
+            if weak_root.upgrade().is_none() || poll_sender.send(AppMsg::PollDevices).is_err() {
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
+            }
+        });
+
         sender.input(AppMsg::RefreshDevices);
         root.present();
 
@@ -267,12 +284,23 @@ impl SimpleComponent for AppModel {
     fn update(&mut self, message: Self::Input, _sender: ComponentSender<Self>) {
         match message {
             AppMsg::RefreshDevices => {
-                self.refresh_connected_devices();
+                self.sync_devices(true);
+            }
+            AppMsg::PollDevices => {
+                self.sync_devices(false);
             }
             AppMsg::SelectDevice(idx) => {
                 if !self.is_mock && idx < self.detected_devices.len() {
+                    self.failed_auto_connect_path = None;
+                    self.failed_auto_connect_attempts = 0;
                     self.selected_device_idx = idx;
-                    self.connect_selected_device();
+                    if !self.connect_selected_device(true, false) {
+                        if let Some(dev) = self.detected_devices.get(idx) {
+                            self.failed_auto_connect_path = Some(dev.path.clone());
+                            self.failed_auto_connect_attempts = Self::MAX_AUTO_CONNECT_ATTEMPTS;
+                        }
+                        self.sync_devices(false);
+                    }
                 }
             }
             AppMsg::ToggleMock(active) => {
@@ -280,7 +308,7 @@ impl SimpleComponent for AppModel {
                 if active {
                     self.activate_mock(self.mock_model);
                 } else {
-                    self.refresh_connected_devices();
+                    self.sync_devices(true);
                 }
             }
             AppMsg::SelectMockModel(model) => {
@@ -308,6 +336,7 @@ impl SimpleComponent for AppModel {
                         Err(e) => {
                             error!("Failed to apply settings to device: {e}");
                             self.show_toast(&format!("Failed to apply settings: {e}"));
+                            self.sync_devices(false);
                         }
                     }
                 }
@@ -336,6 +365,7 @@ impl SimpleComponent for AppModel {
                         Err(e) => {
                             error!("Failed to restore factory defaults: {e}");
                             self.show_toast(&format!("Factory reset failed: {e}"));
+                            self.sync_devices(false);
                         }
                     }
                 } else {
@@ -383,6 +413,7 @@ impl SimpleComponent for AppModel {
                 }
             }
             AppMsg::SendRawPacket(raw) => {
+                let mut tx_failed = false;
                 let summary = if let Some(conn) = &mut self.connection {
                     conn.flush_input();
                     let pkt = Packet::new(raw);
@@ -403,13 +434,19 @@ impl SimpleComponent for AppModel {
                                 }
                             }
                         }
-                        Err(e) => format!("TX failed: {e}"),
+                        Err(e) => {
+                            tx_failed = true;
+                            format!("TX failed: {e}")
+                        }
                     }
                 } else {
                     "Error: No device connected.".to_string()
                 };
                 self.advanced_view
                     .emit(AdvancedViewMsg::RawPacketResult(summary));
+                if tx_failed {
+                    self.sync_devices(false);
+                }
             }
             AppMsg::EnterBootloader => {
                 if let Some(conn) = &mut self.connection {
@@ -422,6 +459,7 @@ impl SimpleComponent for AppModel {
                         }
                         Err(e) => {
                             self.show_toast(&format!("Failed to enter bootloader: {e}"));
+                            self.sync_devices(false);
                         }
                     }
                 } else {
@@ -478,36 +516,126 @@ impl AppModel {
         self.update_all_views(true);
     }
 
-    fn refresh_connected_devices(&mut self) {
-        if self.is_mock {
-            return;
-        }
+    const MAX_AUTO_CONNECT_ATTEMPTS: u8 = 3;
 
-        if let Some(api) = &self.hid_api {
-            self.detected_devices = enumerate_devices(api);
-            if self.selected_device_idx >= self.detected_devices.len() {
-                self.selected_device_idx = 0;
-            }
-            if !self.detected_devices.is_empty() {
-                self.connect_selected_device();
-                return;
-            }
-        } else {
-            self.detected_devices.clear();
-        }
+    fn reset_auto_connect_retry(&mut self) {
+        self.failed_auto_connect_path = None;
+        self.failed_auto_connect_attempts = 0;
+    }
 
+    fn clear_disconnected_state(&mut self) {
         self.connection = None;
         self.firmware_version = None;
         self.chip_id = None;
         self.update_all_views(false);
     }
 
-    fn connect_selected_device(&mut self) {
-        let Some(api) = &self.hid_api else {
+    fn sync_devices(&mut self, manual: bool) {
+        if self.is_mock {
+            return;
+        }
+
+        if manual {
+            self.reset_auto_connect_retry();
+        }
+
+        if self.hid_api.is_none() {
+            self.hid_api = hidapi::HidApi::new().ok();
+        }
+
+        let Some(api) = self.hid_api.as_mut() else {
+            self.detected_devices.clear();
+            self.selected_device_idx = 0;
+            if self.connection.is_some() || manual {
+                self.clear_disconnected_state();
+            }
             return;
         };
-        let Some(dev_info) = self.detected_devices.get(self.selected_device_idx) else {
+
+        let fresh = match refresh_and_enumerate_devices(api) {
+            Ok(devices) => devices,
+            Err(e) => {
+                warn!("Failed to refresh HID device list: {e}");
+                if manual {
+                    self.show_toast(&format!("Failed to refresh HID devices: {e}"));
+                }
+                return;
+            }
+        };
+
+        let was_connected = self.connection.is_some();
+        let plan = plan_device_selection(
+            &self.detected_devices,
+            self.selected_device_idx,
+            was_connected,
+            &fresh,
+        );
+
+        self.detected_devices = fresh;
+        self.selected_device_idx = plan.selected_idx;
+
+        if self.detected_devices.is_empty() {
+            self.reset_auto_connect_retry();
+            if was_connected || plan.list_changed || manual {
+                self.clear_disconnected_state();
+                if was_connected && !manual {
+                    self.show_toast("SimPad device disconnected");
+                }
+            }
             return;
+        }
+
+        if manual || plan.connection_changed {
+            self.try_connect_planned(manual, plan.list_changed);
+        } else if plan.list_changed {
+            self.emit_device_view_state(was_connected);
+        }
+    }
+
+    fn try_connect_planned(&mut self, manual: bool, list_changed: bool) {
+        let target_path = self.detected_devices[self.selected_device_idx].path.clone();
+        let same_failed_path =
+            self.failed_auto_connect_path.as_deref() == Some(target_path.as_str());
+
+        if !manual
+            && same_failed_path
+            && self.failed_auto_connect_attempts >= Self::MAX_AUTO_CONNECT_ATTEMPTS
+        {
+            if list_changed {
+                self.emit_device_view_state(false);
+            }
+            return;
+        }
+
+        // Allow brief transient retries on hotplug while udev/OS permissions settle.
+        let attempt = if manual {
+            Self::MAX_AUTO_CONNECT_ATTEMPTS
+        } else if same_failed_path {
+            self.failed_auto_connect_attempts + 1
+        } else {
+            1
+        };
+
+        let notify_error = manual || attempt >= Self::MAX_AUTO_CONNECT_ATTEMPTS;
+        let notify_connected = !manual;
+        if !self.connect_selected_device(notify_error, notify_connected) {
+            self.failed_auto_connect_path = Some(target_path);
+            self.failed_auto_connect_attempts = attempt;
+        }
+    }
+
+    fn connect_selected_device(&mut self, notify_error: bool, notify_connected: bool) -> bool {
+        // Release any previous HID descriptor before opening the new path so dead or
+        // shared OS handles do not linger across hotplug or manual refreshes.
+        self.connection = None;
+
+        let Some(api) = &self.hid_api else {
+            self.clear_disconnected_state();
+            return false;
+        };
+        let Some(dev_info) = self.detected_devices.get(self.selected_device_idx).cloned() else {
+            self.clear_disconnected_state();
+            return false;
         };
 
         match dev_info.open(api) {
@@ -522,6 +650,7 @@ impl AppModel {
                     .read_all_settings_for_model(dev_info.model)
                     .unwrap_or_else(|_| DeviceSettings::default_for_model(dev_info.model));
 
+                self.reset_auto_connect_retry();
                 self.active_model = dev_info.model;
                 self.firmware_version = ver;
                 self.chip_id = chip_id;
@@ -529,14 +658,20 @@ impl AppModel {
                 self.current_settings = settings;
                 self.connection = Some(Box::new(conn));
                 self.update_all_views(true);
+                if notify_connected {
+                    self.show_toast(&format!("Connected to {}", dev_info.model.display_name()));
+                }
+                true
             }
             Err(e) => {
-                error!("Failed to open HID device {}: {e}", dev_info.path);
-                self.connection = None;
-                self.firmware_version = None;
-                self.chip_id = None;
-                self.update_all_views(false);
-                self.show_toast(&format!("Could not open device: {e}"));
+                if notify_error {
+                    error!("Failed to open HID device {}: {e}", dev_info.path);
+                    self.show_toast(&format!("Could not open device: {e}"));
+                } else {
+                    debug!("Deferred open for HID device {}: {e}", dev_info.path);
+                }
+                self.clear_disconnected_state();
+                false
             }
         }
     }
@@ -557,7 +692,7 @@ impl AppModel {
             .collect()
     }
 
-    fn update_all_views(&mut self, connected: bool) {
+    fn emit_device_view_state(&self, connected: bool) {
         let labels = self.device_labels();
         self.device_view.emit(DeviceViewMsg::UpdateState {
             model: self.active_model,
@@ -573,7 +708,10 @@ impl AppModel {
             device_labels: labels,
             selected_device_idx: self.selected_device_idx,
         });
+    }
 
+    fn update_all_views(&mut self, connected: bool) {
+        self.emit_device_view_state(connected);
         self.sync_editor_views();
     }
 

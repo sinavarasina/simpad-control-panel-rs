@@ -9,7 +9,8 @@ pub use config::{
     ModifierFlags, MouseButtonFlags, RgbColor,
 };
 pub use device::{
-    DeviceConnection, DeviceInfo, DeviceModel, HidConnection, MockConnection, enumerate_devices,
+    DeviceConnection, DeviceInfo, DeviceModel, DeviceSelectionPlan, HidConnection, MockConnection,
+    enumerate_devices, plan_device_selection, refresh_and_enumerate_devices,
 };
 pub use error::{Result, SimpadError};
 pub use protocol::{Command, PACKET_SIZE, Packet};
