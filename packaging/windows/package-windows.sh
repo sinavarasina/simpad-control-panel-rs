@@ -15,7 +15,7 @@ BUNDLE_DIR="$STAGE_DIR/$BUNDLE_NAME"
 DIST_DIR="$REPO_ROOT/dist"
 OUT_ZIP="$DIST_DIR/${BUNDLE_NAME}.zip"
 
-for tool in cargo pkg-config glib-compile-schemas gdk-pixbuf-query-loaders ldd python3; do
+for tool in cargo pkg-config glib-compile-schemas gdk-pixbuf-query-loaders objdump cygpath python3; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         echo "Missing required tool in MSYS2 UCRT64 shell: $tool" >&2
         exit 1
@@ -72,20 +72,33 @@ mkdir -p "$APP_PIXBUF_LOADERS"
 cp "$HOST_PIXBUF_MODULEDIR/"*.dll "$APP_PIXBUF_LOADERS/"
 
 echo "==> Collecting all transitive UCRT64 DLL dependencies..."
-MINGW_PREFIX_WIN="$(cygpath -m "$MINGW_PREFIX")"
-python3 - "$BUNDLE_DIR" "$APP_PIXBUF_LOADERS" "$MINGW_PREFIX" "$MINGW_PREFIX_WIN" <<'PY'
+BUNDLE_DIR_WIN="$(cygpath -m "$BUNDLE_DIR")"
+LOADERS_DIR_WIN="$(cygpath -m "$APP_PIXBUF_LOADERS")"
+MINGW_BIN_WIN="$(cygpath -m "$MINGW_PREFIX/bin")"
+SYS32_WIN="$(cygpath -m "${SYSTEMROOT:-C:/Windows}/System32")"
+
+python3 - "$BUNDLE_DIR_WIN" "$LOADERS_DIR_WIN" "$MINGW_BIN_WIN" "$SYS32_WIN" <<'PY'
 import os
 import re
 import shutil
 import subprocess
 import sys
 
-bundle_dir, loaders_dir, prefix_posix, prefix_win = sys.argv[1:5]
-prefixes = []
-for p in (prefix_posix, prefix_win):
-    norm = p.replace("\\", "/").rstrip("/").lower() + "/"
-    if norm not in prefixes:
-        prefixes.append(norm)
+bundle_dir, loaders_dir, mingw_bin, sys32_dir = sys.argv[1:5]
+
+mingw_dlls = {
+    name.lower(): os.path.join(mingw_bin, name)
+    for name in os.listdir(mingw_bin)
+    if name.lower().endswith(".dll")
+}
+sys_dlls = {
+    name.lower()
+    for name in os.listdir(sys32_dir)
+    if name.lower().endswith((".dll", ".drv"))
+}
+
+def is_windows_virtual_dll(name_lower: str) -> bool:
+    return name_lower.startswith(("api-ms-win-", "ext-ms-win-"))
 
 seeds = [
     os.path.join(bundle_dir, name)
@@ -101,46 +114,61 @@ seeds.extend(
 queue = list(seeds)
 visited = set()
 copied = set()
-line_re = re.compile(r"^\s*([^\s]+)\s*=>\s*(.+?)(?:\s+\(0x[0-9a-fA-F]+\))?\s*$")
+missing = []
+dll_re = re.compile(r"^\s*DLL Name:\s*(.+?)\s*$")
 
 while queue:
     target = queue.pop(0)
-    if target in visited:
+    norm_target = os.path.normcase(os.path.abspath(target))
+    if norm_target in visited:
         continue
-    visited.add(target)
+    visited.add(norm_target)
 
-    out = subprocess.check_output(["ldd", target], text=True, stderr=subprocess.STDOUT)
+    out = subprocess.check_output(["objdump", "-p", target], text=True, stderr=subprocess.STDOUT)
     for line in out.splitlines():
-        if "not found" in line:
-            raise SystemExit(f"Unresolved DLL dependency in {target}: {line.strip()}")
-        m = line_re.match(line)
+        m = dll_re.match(line)
         if not m:
             continue
-        resolved = m.group(2).strip()
-        resolved_norm = resolved.replace("\\", "/").lower()
-        if not any(resolved_norm.startswith(p) for p in prefixes):
+        dep = m.group(1).strip()
+        dep_lower = dep.lower()
+        if dep_lower in mingw_dlls:
+            src = mingw_dlls[dep_lower]
+            dest = os.path.join(bundle_dir, os.path.basename(src))
+            if dep_lower not in copied:
+                shutil.copy2(src, dest)
+                copied.add(dep_lower)
+                queue.append(dest)
+        elif dep_lower in sys_dlls or is_windows_virtual_dll(dep_lower):
             continue
-        dest = os.path.join(bundle_dir, os.path.basename(resolved))
-        if dest.lower() not in copied:
-            shutil.copy2(resolved, dest)
-            copied.add(dest.lower())
-            queue.append(dest)
+        elif not os.path.isfile(os.path.join(bundle_dir, dep)):
+            missing.append((os.path.basename(target), dep))
+
+if missing:
+    for parent, dep in missing:
+        print(f"Unresolved Windows DLL dependency: {parent} -> {dep}", file=sys.stderr)
+    raise SystemExit(1)
 
 print(f"Bundled {len(copied)} DLLs into {bundle_dir}")
 PY
 
 echo "==> Generating portable GdkPixbuf loaders.cache and loaders.cache.in..."
-RAW_CACHE="$(gdk-pixbuf-query-loaders "$APP_PIXBUF_LOADERS/"*.dll)"
-python3 - "$RAW_CACHE" "$PIXBUF_ABI_VER" "$APP_PIXBUF_DIR" <<'PY'
+APP_PIXBUF_DIR_WIN="$(cygpath -m "$APP_PIXBUF_DIR")"
+RAW_CACHE_FILE="$APP_PIXBUF_DIR/loaders.cache.raw"
+gdk-pixbuf-query-loaders "$APP_PIXBUF_LOADERS/"*.dll > "$RAW_CACHE_FILE"
+RAW_CACHE_WIN="$(cygpath -m "$RAW_CACHE_FILE")"
+python3 - "$RAW_CACHE_WIN" "$PIXBUF_ABI_VER" "$APP_PIXBUF_DIR_WIN" <<'PY'
 import os
 import re
 import sys
 
-raw_cache, abi_ver, out_dir = sys.argv[1:4]
+raw_cache_path, abi_ver, out_dir = sys.argv[1:4]
+with open(raw_cache_path, "r", encoding="utf-8") as fh:
+    raw_cache = fh.read()
 
 rel_lines = []
 tpl_lines = []
-dll_line_re = re.compile(r'^"(.+\.dll)"\s*$')
+dll_line_re = re.compile(r'^"(.+\.dll)"\s*$', re.IGNORECASE)
+count = 0
 
 for line in raw_cache.splitlines():
     m = dll_line_re.match(line.strip())
@@ -148,16 +176,28 @@ for line in raw_cache.splitlines():
         dll_base = os.path.basename(m.group(1).replace("\\", "/"))
         rel_lines.append(f'"lib\\\\gdk-pixbuf-2.0\\\\{abi_ver}\\\\loaders\\\\{dll_base}"')
         tpl_lines.append(f'"@LOADERS_DIR@\\\\{dll_base}"')
+        count += 1
     else:
         rel_lines.append(line)
         tpl_lines.append(line)
+
+if count == 0:
+    raise SystemExit("Error: no loader entries generated in loaders.cache.in")
 
 with open(os.path.join(out_dir, "loaders.cache"), "w", encoding="utf-8", newline="\n") as fh:
     fh.write("\n".join(rel_lines) + "\n")
 
 with open(os.path.join(out_dir, "loaders.cache.in"), "w", encoding="utf-8", newline="\n") as fh:
     fh.write("\n".join(tpl_lines) + "\n")
+
+print(f"Registered {count} GdkPixbuf loader(s)")
 PY
+rm -f "$RAW_CACHE_FILE"
+
+if ! grep -q "image/svg+xml" "$APP_PIXBUF_DIR/loaders.cache.in"; then
+    echo "Error: SVG pixbuf loader not detected in loaders.cache.in" >&2
+    exit 1
+fi
 
 echo "==> Compiling GSettings schemas..."
 cp "$MINGW_PREFIX/share/glib-2.0/schemas/"*.xml "$BUNDLE_DIR/share/glib-2.0/schemas/"
@@ -179,18 +219,46 @@ if [[ -n "$ICON_CACHE_TOOL" ]]; then
     done
 fi
 
-echo "==> Verifying isolated DLL completeness (outside MSYS2 PATH)..."
-ISOLATED_PATH="$BUNDLE_DIR:/usr/bin:/c/Windows/System32:/c/Windows"
-for target in "$BUNDLE_DIR/${APP_NAME}.exe" "$APP_PIXBUF_LOADERS/"*.dll; do
-    LDD_OUT="$(PATH="$ISOLATED_PATH" ldd "$target")"
-    if echo "$LDD_OUT" | grep -qi "not found" \
-        || echo "$LDD_OUT" | grep -qFi "$MINGW_PREFIX/" \
-        || echo "$LDD_OUT" | grep -qFi "$MINGW_PREFIX_WIN/"; then
-        echo "Unbundled or missing DLL dependency for $target:" >&2
-        echo "$LDD_OUT" | grep -i "not found\|$MINGW_PREFIX/\|$MINGW_PREFIX_WIN/" >&2 || echo "$LDD_OUT" >&2
-        exit 1
-    fi
-done
+echo "==> Verifying isolated DLL completeness via PE headers..."
+python3 - "$BUNDLE_DIR_WIN" "$LOADERS_DIR_WIN" "$SYS32_WIN" <<'PY'
+import os
+import re
+import subprocess
+import sys
+
+bundle_dir, loaders_dir, sys32_dir = sys.argv[1:4]
+bundled = {name.lower() for name in os.listdir(bundle_dir) if name.lower().endswith(".dll")}
+sys_dlls = {
+    name.lower()
+    for name in os.listdir(sys32_dir)
+    if name.lower().endswith((".dll", ".drv"))
+}
+dll_re = re.compile(r"^\s*DLL Name:\s*(.+?)\s*$")
+
+targets = [
+    os.path.join(bundle_dir, name)
+    for name in sorted(os.listdir(bundle_dir))
+    if name.lower().endswith((".exe", ".dll"))
+]
+targets.extend(
+    os.path.join(loaders_dir, name)
+    for name in sorted(os.listdir(loaders_dir))
+    if name.lower().endswith(".dll")
+)
+
+for target in targets:
+    out = subprocess.check_output(["objdump", "-p", target], text=True, stderr=subprocess.STDOUT)
+    for line in out.splitlines():
+        m = dll_re.match(line)
+        if not m:
+            continue
+        dep = m.group(1).strip().lower()
+        if dep in bundled or dep in sys_dlls or dep.startswith(("api-ms-win-", "ext-ms-win-")):
+            continue
+        raise SystemExit(f"Missing bundled DLL for {os.path.basename(target)}: {dep}")
+
+print(f"Verified {len(targets)} PE binaries/DLLs cleanly resolved within bundle or Windows System32")
+PY
 for req_dll in libgtk-4-1.dll libadwaita-1-0.dll libgio-2.0-0.dll libgdk_pixbuf-2.0-0.dll; do
     if [[ ! -f "$BUNDLE_DIR/$req_dll" ]]; then
         echo "Expected bundled Windows DLL missing: $req_dll" >&2
