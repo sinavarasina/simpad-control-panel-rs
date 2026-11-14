@@ -1,0 +1,20 @@
+# Build artifacts
+/target/
+**/*.rs.bk
+*.pdb
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment and logs
+.env
+*.log
+
+# OS metadata
+.DS_Store
+Thumbs.db
+desktop.ini

@@ -1,0 +1,15 @@
+# udev rules for SimPad and compatible devices
+# Allows non-root users to configure device settings via hidraw.
+#
+# Installation:
+#   sudo cp 99-simpad.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules
+#   sudo udevadm trigger
+
+# SimPad devices (Vendor ID 0x8088)
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="8088", MODE="0666", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="8088", MODE="0666", TAG+="uaccess"
+
+# Sayo's KeyPad O2C (Vendor ID 0x8089, Product ID 0x0003)
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="8089", ATTRS{idProduct}=="0003", MODE="0666", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="8089", ATTRS{idProduct}=="0003", MODE="0666", TAG+="uaccess"
