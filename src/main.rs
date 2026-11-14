@@ -103,8 +103,8 @@ mod portable_env {
                     let _ = std::fs::create_dir_all(parent);
                 }
                 if std::fs::write(&cache_path, rendered.as_bytes()).is_ok() {
-                    set_process_env("GDK_PIXBUF_MODULEDIR", &loaders_dir);
-                    set_process_env("GDK_PIXBUF_MODULE_FILE", &cache_path);
+                    set_process_env("GDK_PIXBUF_MODULEDIR", loaders_dir);
+                    set_process_env("GDK_PIXBUF_MODULE_FILE", cache_path);
                     break;
                 }
             }

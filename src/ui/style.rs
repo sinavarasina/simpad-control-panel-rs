@@ -30,7 +30,7 @@ fn apply_windows_theme() {
 
     if let Some(display) = relm4::gtk::gdk::Display::default() {
         let provider = relm4::gtk::CssProvider::new();
-        provider.load_from_string(&windows_fluent_css(dark));
+        provider.load_from_data(&windows_fluent_css(dark));
         relm4::gtk::style_context_add_provider_for_display(
             &display,
             &provider,
