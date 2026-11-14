@@ -1,0 +1,114 @@
+name: Build Windows Bundle
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Version label embedded in output archive
+        required: false
+        type: string
+        default: ""
+      artifact_name:
+        description: Uploaded workflow artifact name
+        required: false
+        type: string
+        default: simpad-control-panel-rs-windows-x86_64
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Optional version label override for dry-run (defaults to dryrun-<sha>)
+        required: false
+        type: string
+        default: ""
+
+jobs:
+  build-windows:
+    name: Build & Verify Windows Bundle (x86_64 UCRT64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          path-type: minimal
+          install: >-
+            mingw-w64-ucrt-x86_64-rust
+            mingw-w64-ucrt-x86_64-gtk4
+            mingw-w64-ucrt-x86_64-libadwaita
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-librsvg
+            mingw-w64-ucrt-x86_64-adwaita-icon-theme
+            mingw-w64-ucrt-x86_64-hicolor-icon-theme
+            zip
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: windows-ucrt64-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            windows-ucrt64-release-
+
+      - name: Resolve version label
+        id: meta
+        shell: msys2 {0}
+        run: |
+          if [[ -n "${{ inputs.version }}" ]]; then
+            VERSION="${{ inputs.version }}"
+          elif [[ "${{ github.ref_type }}" == "tag" ]]; then
+            VERSION="${{ github.ref_name }}"
+          else
+            VERSION="dryrun-${GITHUB_SHA::7}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Build and bundle Windows portable archive
+        shell: msys2 {0}
+        run: |
+          bash packaging/windows/package-windows.sh "${{ steps.meta.outputs.version }}"
+
+      - name: Smoke-test extracted bundle with MSYS2 removed from PATH
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem -Path dist -Filter "*.zip" | Select-Object -First 1
+          if (-not $zip) { throw "No Windows zip archive produced in dist/" }
+
+          $smokeRoot = Join-Path $env:RUNNER_TEMP "simpad-win-smoke"
+          if (Test-Path $smokeRoot) { Remove-Item -Recurse -Force $smokeRoot }
+          Expand-Archive -Path $zip.FullName -DestinationPath $smokeRoot -Force
+
+          $exe = Get-ChildItem -Path $smokeRoot -Recurse -Filter "simpad-control-panel-rs.exe" | Select-Object -First 1
+          if (-not $exe) { throw "simpad-control-panel-rs.exe not found in extracted zip" }
+
+          $psi = New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName = $exe.FullName
+          $psi.WorkingDirectory = "$env:SystemRoot\Temp"
+          $psi.UseShellExecute = $false
+          $psi.RedirectStandardError = $true
+          $psi.EnvironmentVariables["PATH"] = "$env:SystemRoot\System32;$env:SystemRoot"
+
+          $proc = [System.Diagnostics.Process]::Start($psi)
+          Start-Sleep -Seconds 3
+          if ($proc.HasExited) {
+            $stderr = $proc.StandardError.ReadToEnd()
+            if ($stderr) { Write-Host $stderr }
+            if ($proc.ExitCode -ne 0) {
+              $u32 = $proc.ExitCode -band 0xFFFFFFFFL
+              throw ("Portable Windows binary exited prematurely with code 0x{0:X8} ({1})" -f $u32, $proc.ExitCode)
+            }
+          } else {
+            $proc.Kill()
+            $proc.WaitForExit()
+          }
+          Write-Host "Windows isolated runtime smoke test passed cleanly."
+
+      - name: Upload Windows portable bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name || 'simpad-control-panel-rs-windows-x86_64' }}
+          path: dist/*.zip
+          if-no-files-found: error

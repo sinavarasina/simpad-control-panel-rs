@@ -1,0 +1,140 @@
+name: Release & Dry-Run
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Dry-run only (build, verify, and upload artifacts without creating a GitHub Release)
+        required: true
+        type: boolean
+        default: true
+      target:
+        description: Target build flow(s) to execute
+        required: true
+        type: choice
+        options:
+          - all
+          - linux-appimage
+          - windows
+        default: all
+      version:
+        description: Optional version/tag override (e.g. v0.1.0; empty defaults to dryrun-<sha>)
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    name: Prepare Release Plan
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      is_release: ${{ steps.plan.outputs.is_release }}
+      run_linux: ${{ steps.plan.outputs.run_linux }}
+      run_windows: ${{ steps.plan.outputs.run_windows }}
+    steps:
+      - name: Compute build matrix and release flags
+        id: plan
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "push" && "${{ github.ref_type }}" == "tag" ]]; then
+            VERSION="${{ github.ref_name }}"
+            IS_RELEASE="true"
+            TARGET="all"
+          else
+            TARGET="${{ inputs.target || 'all' }}"
+            if [[ -n "${{ inputs.version }}" ]]; then
+              VERSION="${{ inputs.version }}"
+            else
+              VERSION="dryrun-${GITHUB_SHA::7}"
+            fi
+            if [[ "${{ inputs.dry_run }}" == "false" ]]; then
+              if [[ -z "${{ inputs.version }}" ]]; then
+                echo "Non-dry-run workflow_dispatch requires an explicit version tag (e.g. v0.1.0)" >&2
+                exit 1
+              fi
+              IS_RELEASE="true"
+            else
+              IS_RELEASE="false"
+            fi
+          fi
+
+          RUN_LINUX="false"
+          RUN_WINDOWS="false"
+          if [[ "$TARGET" == "all" || "$TARGET" == "linux-appimage" ]]; then
+            RUN_LINUX="true"
+          fi
+          if [[ "$TARGET" == "all" || "$TARGET" == "windows" ]]; then
+            RUN_WINDOWS="true"
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "is_release=$IS_RELEASE" >> "$GITHUB_OUTPUT"
+          echo "run_linux=$RUN_LINUX" >> "$GITHUB_OUTPUT"
+          echo "run_windows=$RUN_WINDOWS" >> "$GITHUB_OUTPUT"
+          echo "Plan -> version=$VERSION, is_release=$IS_RELEASE, linux=$RUN_LINUX, windows=$RUN_WINDOWS"
+
+  linux-appimage:
+    name: Target · Linux AppImage
+    needs: prepare
+    if: needs.prepare.outputs.run_linux == 'true'
+    uses: ./.github/workflows/build-linux-appimage.yml
+    with:
+      version: ${{ needs.prepare.outputs.version }}
+      artifact_name: simpad-control-panel-rs-linux-x86_64-appimage
+
+  windows:
+    name: Target · Windows Bundle
+    needs: prepare
+    if: needs.prepare.outputs.run_windows == 'true'
+    uses: ./.github/workflows/build-windows.yml
+    with:
+      version: ${{ needs.prepare.outputs.version }}
+      artifact_name: simpad-control-panel-rs-windows-x86_64
+
+  publish:
+    name: Aggregate Checksums & Release
+    needs: [prepare, linux-appimage, windows]
+    if: >-
+      !cancelled()
+      && needs.prepare.result == 'success'
+      && (needs.linux-appimage.result == 'success' || needs.linux-appimage.result == 'skipped')
+      && (needs.windows.result == 'success' || needs.windows.result == 'skipped')
+      && (needs.linux-appimage.result == 'success' || needs.windows.result == 'success')
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download built target artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: simpad-control-panel-rs-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Generate SHA256SUMS.txt
+        working-directory: release-assets
+        run: |
+          ls -lh
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Upload combined release/dry-run artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-bundle-${{ needs.prepare.outputs.version }}
+          path: release-assets/*
+          retention-days: 14
+
+      - name: Publish GitHub Release
+        if: needs.prepare.outputs.is_release == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.version }}
+          name: SimPad Control Panel ${{ needs.prepare.outputs.version }}
+          generate_release_notes: true
+          files: release-assets/*

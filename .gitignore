@@ -1,5 +1,8 @@
-# Build artifacts
+# Build and packaging artifacts
 /target/
+/dist/
+/AppDir/
+*.AppImage
 **/*.rs.bk
 *.pdb
 

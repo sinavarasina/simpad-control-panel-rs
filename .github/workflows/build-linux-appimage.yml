@@ -1,0 +1,105 @@
+name: Build Linux AppImage
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Version label embedded in output filename
+        required: false
+        type: string
+        default: ""
+      artifact_name:
+        description: Uploaded workflow artifact name
+        required: false
+        type: string
+        default: simpad-control-panel-rs-linux-x86_64-appimage
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Optional version label override for dry-run (defaults to dryrun-<sha>)
+        required: false
+        type: string
+        default: ""
+
+jobs:
+  build-linux-appimage:
+    name: Build & Verify Linux AppImage (x86_64)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build, GTK4, and AppImage dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-4-dev \
+            libgtk-4-bin \
+            libadwaita-1-dev \
+            libudev-dev \
+            pkg-config \
+            patchelf \
+            desktop-file-utils \
+            librsvg2-common \
+            adwaita-icon-theme \
+            hicolor-icon-theme \
+            file \
+            xvfb
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Resolve version label
+        id: meta
+        shell: bash
+        run: |
+          if [[ -n "${{ inputs.version }}" ]]; then
+            VERSION="${{ inputs.version }}"
+          elif [[ "${{ github.ref_type }}" == "tag" ]]; then
+            VERSION="${{ github.ref_name }}"
+          else
+            VERSION="dryrun-${GITHUB_SHA::7}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Download appimagetool
+        run: |
+          curl -fsSL -o /tmp/appimagetool \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x /tmp/appimagetool
+
+      - name: Build bundled AppImage
+        env:
+          APPIMAGETOOL: /tmp/appimagetool
+        run: |
+          bash packaging/linux/build-appimage.sh "${{ steps.meta.outputs.version }}"
+
+      - name: Smoke-test AppImage runtime under Xvfb
+        run: |
+          APPIMAGE_BIN="$(find dist -maxdepth 1 -name '*.AppImage' | head -n 1)"
+          test -x "$APPIMAGE_BIN"
+          set +e
+          timeout 4s xvfb-run -a env APPIMAGE_EXTRACT_AND_RUN=1 "$APPIMAGE_BIN" 2>appimage-smoke.log
+          rc=$?
+          set -e
+          cat appimage-smoke.log
+          if [[ "$rc" -ne 124 && "$rc" -ne 0 ]]; then
+            echo "AppImage smoke run failed with exit code $rc" >&2
+            exit "$rc"
+          fi
+          if grep -qiE "GLib-GIO-ERROR|No GSettings schemas|cannot open shared object file|symbol lookup error|GdkPixbuf-WARNING" appimage-smoke.log; then
+            echo "Detected runtime GTK/library bundling error in AppImage log" >&2
+            exit 1
+          fi
+
+      - name: Include Linux udev rules alongside AppImage
+        run: cp udev/99-simpad.rules dist/99-simpad.rules
+
+      - name: Upload Linux AppImage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name || 'simpad-control-panel-rs-linux-x86_64-appimage' }}
+          path: |
+            dist/*.AppImage
+            dist/99-simpad.rules
+          if-no-files-found: error

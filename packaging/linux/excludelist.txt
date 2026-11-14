@@ -1,0 +1,67 @@
+# Libraries intentionally excluded from the Linux AppImage bundle so the app
+# uses the host OS ABI/drivers (POSIX/glibc, compiler runtime, GPU/display, udev).
+# Format: shell/glob patterns matched against the library filename (basename).
+
+# Core C runtime & glibc
+ld-linux*
+libc.so.*
+libm.so.*
+libdl.so.*
+libpthread.so.*
+librt.so.*
+libresolv.so.*
+libutil.so.*
+libnsl.so.*
+libnss_*.so.*
+libanl.so.*
+libBrokenLocale.so.*
+libthread_db.so.*
+
+# Compiler runtime (must match host Mesa/DRI/Vulkan drivers)
+libstdc++.so.*
+libgcc_s.so.*
+
+# Hardware / udev / systemd / D-Bus interfaces
+libudev.so.*
+libsystemd.so.*
+libdbus-1.so.*
+
+# OpenGL / Vulkan / EGL / DRI / Wayland display stack
+libGL.so.*
+libGLX.so.*
+libGLdispatch.so.*
+libEGL.so.*
+libGLESv2.so.*
+libOpenGL.so.*
+libdrm.so.*
+libdrm_*.so.*
+libgbm.so.*
+libvulkan.so.*
+libwayland-client.so.*
+libwayland-cursor.so.*
+libwayland-egl.so.*
+libwayland-server.so.*
+
+# X11 / XCB core libraries
+libX11.so.*
+libX11-xcb.so.*
+libxcb.so.*
+libxcb-*.so.*
+libXau.so.*
+libXdmcp.so.*
+libXext.so.*
+libXi.so.*
+libXfixes.so.*
+libXdamage.so.*
+libXcomposite.so.*
+libXcursor.so.*
+libXrandr.so.*
+libXrender.so.*
+libXinerama.so.*
+
+# System font configuration & compression base
+libfontconfig.so.*
+libfreetype.so.*
+libexpat.so.*
+libz.so.*
+libuuid.so.*

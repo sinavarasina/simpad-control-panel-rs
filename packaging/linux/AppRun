@@ -1,0 +1,30 @@
+#!/usr/bin/env sh
+set -eu
+
+SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+APPDIR="${APPDIR:-$SELF_DIR}"
+
+export LD_LIBRARY_PATH="$APPDIR/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export GSETTINGS_SCHEMA_DIR="$APPDIR/usr/share/glib-2.0/schemas${GSETTINGS_SCHEMA_DIR:+:$GSETTINGS_SCHEMA_DIR}"
+export XDG_DATA_DIRS="$APPDIR/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+
+# Isolate GTK4 and GIO module directories so host modules built against a different
+# GTK/GLib minor version cannot be loaded into the bundled runtime.
+export GTK_PATH="$APPDIR/usr/lib/gtk-4.0"
+export GIO_MODULE_DIR="$APPDIR/usr/lib/gio/modules"
+unset GSETTINGS_BACKEND || true
+
+PIXBUF_SUBDIR=$(find "$APPDIR/usr/lib/gdk-pixbuf-2.0" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | head -n 1 || true)
+if [ -n "$PIXBUF_SUBDIR" ] && [ -f "$PIXBUF_SUBDIR/loaders.cache.in" ]; then
+    export GDK_PIXBUF_MODULEDIR="$PIXBUF_SUBDIR/loaders"
+    RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}"
+    UID_TAG=$(id -u 2>/dev/null || echo 0)
+    CACHE_DIR="$RUNTIME_DIR/simpad-control-panel-$UID_TAG"
+    if mkdir -p "$CACHE_DIR" 2>/dev/null; then
+        CACHE_FILE="$CACHE_DIR/loaders.cache"
+        sed "s|__APPDIR__|$APPDIR|g" "$PIXBUF_SUBDIR/loaders.cache.in" > "$CACHE_FILE"
+        export GDK_PIXBUF_MODULE_FILE="$CACHE_FILE"
+    fi
+fi
+
+exec "$APPDIR/usr/bin/simpad-control-panel-rs" "$@"

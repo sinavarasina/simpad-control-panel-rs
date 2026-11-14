@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=SimPad Control Panel
+GenericName=Keypad Configurator
+Comment=Configure key bindings and RGB lighting on SimPad keypads
+Exec=simpad-control-panel-rs
+Icon=net.bysb.simpad.controlpanel
+Terminal=false
+Categories=Settings;HardwareSettings;
+Keywords=simpad;keypad;osu;hid;rgb;keyboard;
+StartupNotify=true
+StartupWMClass=net.bysb.simpad.controlpanel
