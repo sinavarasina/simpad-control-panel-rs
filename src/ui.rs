@@ -1,6 +1,7 @@
 pub mod about_view;
 pub mod advanced_view;
 pub mod app;
+pub mod device_preview;
 pub mod device_view;
 pub mod key_capture;
 pub mod keys_view;

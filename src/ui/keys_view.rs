@@ -8,6 +8,8 @@ use crate::config::key_binding::KeyBinding;
 use crate::config::key_code::KeyCode;
 use crate::config::modifier::ModifierFlags;
 use crate::config::mouse::MouseButtonFlags;
+use crate::device::DeviceModel;
+use crate::ui::device_preview::KeysDiagramPreview;
 use crate::ui::key_capture::translate_key_event;
 
 const MODIFIER_OPTIONS_LEFT: [(u8, &str); 4] = [
@@ -166,9 +168,11 @@ impl FactoryComponent for FlagCheckItem {
 }
 
 pub struct KeysViewState {
+    pub active_model: DeviceModel,
     pub keys: Vec<KeyBinding>,
     pub selected_key_idx: usize,
     pub is_capturing: bool,
+    diagram: KeysDiagramPreview,
     key_slots: FactoryVecDeque<KeySlotButton>,
     mod_left_checks: FactoryVecDeque<FlagCheckItem>,
     mod_right_checks: FactoryVecDeque<FlagCheckItem>,
@@ -177,7 +181,10 @@ pub struct KeysViewState {
 
 #[derive(Debug)]
 pub enum KeysViewMsg {
-    SyncKeys(Vec<KeyBinding>),
+    Sync {
+        model: DeviceModel,
+        keys: Vec<KeyBinding>,
+    },
     SelectKey(usize),
     SetKeyCode(u8),
     ToggleCapture(bool),
@@ -220,15 +227,6 @@ impl KeysViewState {
             .unwrap_or_default()
     }
 
-    fn overview_summary(&self) -> String {
-        self.keys
-            .iter()
-            .enumerate()
-            .map(|(i, k)| format!("BT{}: {}", i + 1, k))
-            .collect::<Vec<_>>()
-            .join("   •   ")
-    }
-
     fn sync_factories(&mut self) {
         let mut slot_guard = self.key_slots.guard();
         while slot_guard.len() > self.keys.len() {
@@ -243,6 +241,9 @@ impl KeysViewState {
             }
         }
         drop(slot_guard);
+
+        self.diagram
+            .sync(self.active_model, &self.keys, self.selected_key_idx);
 
         let binding = self.selected_binding();
         let mod_bits = binding.modifiers.to_bits();
@@ -308,7 +309,7 @@ impl KeysViewState {
 
 #[relm4::component(pub)]
 impl Component for KeysViewState {
-    type Init = Vec<KeyBinding>;
+    type Init = (DeviceModel, Vec<KeyBinding>);
     type Input = KeysViewMsg;
     type Output = KeysViewOutput;
     type CommandOutput = ();
@@ -316,7 +317,7 @@ impl Component for KeysViewState {
     view! {
         gtk::Box {
             set_orientation: gtk::Orientation::Vertical,
-            set_spacing: 16,
+            set_spacing: 14,
             set_margin_all: 16,
 
             adw::StatusPage {
@@ -332,7 +333,7 @@ impl Component for KeysViewState {
                 #[watch]
                 set_visible: !model.keys.is_empty(),
                 set_orientation: gtk::Orientation::Vertical,
-                set_spacing: 14,
+                set_spacing: 12,
 
                 gtk::Label {
                     set_halign: gtk::Align::Start,
@@ -343,7 +344,16 @@ impl Component for KeysViewState {
                 gtk::Label {
                     set_halign: gtk::Align::Start,
                     add_css_class: "dim-label",
-                    set_text: "Choose a physical button below, then pick a key from the list or click Capture Key.",
+                    set_text: "Click a button on the device diagram or below, then choose a key or press Capture Key.",
+                },
+
+                // Interactive physical device blueprint (Cairo vector)
+                gtk::Frame {
+                    #[watch]
+                    set_label: Some(&format!("{} — Hardware Layout", model.active_model.display_name())),
+
+                    #[local_ref]
+                    key_diagram -> gtk::DrawingArea {},
                 },
 
                 // Dynamic per-model physical button chips (3, 5, 6, or 8 buttons)
@@ -495,23 +505,6 @@ impl Component for KeysViewState {
                         },
                     }
                 },
-
-                // Overview summary of all configured buttons
-                gtk::Frame {
-                    set_label: Some("Configured Shortcuts Overview"),
-
-                    gtk::Box {
-                        set_orientation: gtk::Orientation::Vertical,
-                        set_margin_all: 12,
-
-                        gtk::Label {
-                            set_halign: gtk::Align::Start,
-                            set_wrap: true,
-                            #[watch]
-                            set_label: &model.overview_summary(),
-                        },
-                    }
-                },
             }
         }
     }
@@ -521,6 +514,13 @@ impl Component for KeysViewState {
         root: Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
+        let (active_model, keys) = init;
+
+        let diagram_sender = sender.clone();
+        let diagram = KeysDiagramPreview::new(move |idx| {
+            diagram_sender.input(KeysViewMsg::SelectKey(idx));
+        });
+
         let key_slots =
             FactoryVecDeque::builder()
                 .launch_default()
@@ -528,7 +528,7 @@ impl Component for KeysViewState {
                     KeySlotOutput::Selected(idx) => KeysViewMsg::SelectKey(idx),
                 });
 
-        let initial_binding = init.first().copied().unwrap_or_default();
+        let initial_binding = keys.first().copied().unwrap_or_default();
         let mod_bits = initial_binding.modifiers.to_bits();
         let mouse_bits = initial_binding.mouse.to_bits();
 
@@ -552,9 +552,11 @@ impl Component for KeysViewState {
         );
 
         let mut model = KeysViewState {
-            keys: init,
+            active_model,
+            keys,
             selected_key_idx: 0,
             is_capturing: false,
+            diagram,
             key_slots,
             mod_left_checks,
             mod_right_checks,
@@ -562,6 +564,7 @@ impl Component for KeysViewState {
         };
         model.sync_factories();
 
+        let key_diagram = model.diagram.widget();
         let key_buttons_flow = model.key_slots.widget();
         let mod_left_box = model.mod_left_checks.widget();
         let mod_right_box = model.mod_right_checks.widget();
@@ -598,7 +601,8 @@ impl Component for KeysViewState {
         _root: &Self::Root,
     ) {
         match message {
-            KeysViewMsg::SyncKeys(keys) => {
+            KeysViewMsg::Sync { model, keys } => {
+                self.active_model = model;
                 self.keys = keys;
                 self.is_capturing = false;
                 if self.selected_key_idx >= self.keys.len() {

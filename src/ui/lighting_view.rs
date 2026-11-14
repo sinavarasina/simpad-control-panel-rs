@@ -5,7 +5,8 @@ use relm4::gtk::{gdk, gio};
 use relm4::prelude::*;
 
 use crate::config::lighting::{Brightness, LedConfig, LightMode, LightSpeed, RgbColor};
-use crate::device::DeviceCapabilities;
+use crate::device::{DeviceCapabilities, DeviceModel};
+use crate::ui::device_preview::LightingDiagramPreview;
 
 fn color_to_rgba(color: RgbColor) -> gdk::RGBA {
     gdk::RGBA::new(
@@ -211,6 +212,7 @@ impl FactoryComponent for LedCard {
 }
 
 pub struct LightingViewState {
+    pub active_model: DeviceModel,
     pub capabilities: DeviceCapabilities,
     pub mode: LightMode,
     pub leds: Vec<LedConfig>,
@@ -221,11 +223,13 @@ pub struct LightingViewState {
     last_modes_ptr: *const LightMode,
     last_modes_len: usize,
     led_cards: FactoryVecDeque<LedCard>,
+    preview: LightingDiagramPreview,
 }
 
 #[derive(Debug)]
 pub enum LightingViewMsg {
     Sync {
+        model: DeviceModel,
         capabilities: DeviceCapabilities,
         mode: LightMode,
         leds: Vec<LedConfig>,
@@ -233,6 +237,7 @@ pub enum LightingViewMsg {
         night_light: bool,
         full_speed_mode: bool,
     },
+    SetPreviewActive(bool),
     SetFullSpeed(bool),
     DisableFullSpeedClicked,
     SetModeByIndex(u32),
@@ -301,6 +306,32 @@ impl LightingViewState {
         }
     }
 
+    fn preview_caption(&self) -> &'static str {
+        if self.capabilities.has_full_speed && self.full_speed_mode {
+            "LED output disabled (Full Speed Mode)"
+        } else if self.is_static_only() {
+            "Static RGB color preview"
+        } else {
+            match self.mode {
+                LightMode::KeepOff => "LEDs turned off",
+                LightMode::KeepOn => "Continuous static glow",
+                LightMode::RainbowColor => "Animated rainbow cycle",
+                _ => "Click or hold keys above to test effect",
+            }
+        }
+    }
+
+    fn sync_preview(&self) {
+        self.preview.sync(
+            self.active_model,
+            self.capabilities,
+            self.mode,
+            &self.leds,
+            self.speed,
+            self.full_speed_mode,
+        );
+    }
+
     fn selected_mode_index(&self) -> u32 {
         self.capabilities
             .supported_light_modes
@@ -347,6 +378,7 @@ impl LightingViewState {
 #[relm4::component(pub)]
 impl SimpleComponent for LightingViewState {
     type Init = (
+        DeviceModel,
         DeviceCapabilities,
         LightMode,
         Vec<LedConfig>,
@@ -360,7 +392,7 @@ impl SimpleComponent for LightingViewState {
     view! {
         gtk::Box {
             set_orientation: gtk::Orientation::Vertical,
-            set_spacing: 16,
+            set_spacing: 14,
             set_margin_all: 16,
 
             adw::StatusPage {
@@ -376,7 +408,7 @@ impl SimpleComponent for LightingViewState {
                 #[watch]
                 set_visible: model.has_leds(),
                 set_orientation: gtk::Orientation::Vertical,
-                set_spacing: 16,
+                set_spacing: 14,
 
                 gtk::Label {
                     set_halign: gtk::Align::Start,
@@ -418,66 +450,129 @@ impl SimpleComponent for LightingViewState {
                     },
                 },
 
-                // Effect mode selector (hidden on static-LED models like Sayo O2C)
+                // Live hardware lighting preview beside effect & night light controls
                 gtk::Box {
-                    #[watch]
-                    set_visible: !model.is_static_only(),
                     set_orientation: gtk::Orientation::Horizontal,
-                    set_spacing: 12,
+                    set_spacing: 14,
 
-                    gtk::Label {
-                        set_text: "Lighting Effect:",
-                        set_width_chars: 14,
-                        set_halign: gtk::Align::Start,
+                    gtk::Frame {
+                        set_label: Some("Live Lighting Preview"),
+                        set_valign: gtk::Align::Start,
+
+                        gtk::Box {
+                            set_orientation: gtk::Orientation::Vertical,
+                            set_spacing: 6,
+                            set_margin_top: 4,
+                            set_margin_bottom: 10,
+                            set_margin_start: 10,
+                            set_margin_end: 10,
+
+                            #[local_ref]
+                            light_preview -> gtk::DrawingArea {},
+
+                            gtk::Label {
+                                set_halign: gtk::Align::Center,
+                                set_wrap: true,
+                                add_css_class: "caption",
+                                add_css_class: "dim-label",
+                                #[watch]
+                                set_text: model.preview_caption(),
+                            },
+                        },
                     },
 
-                    #[name = "mode_dropdown"]
-                    gtk::DropDown {
+                    gtk::Box {
+                        set_orientation: gtk::Orientation::Vertical,
+                        set_spacing: 10,
                         set_hexpand: true,
-                        set_model: Some(&model.modes_list_model),
-                        set_selected: model.selected_mode_index(),
-                        #[track(
-                            skip_init,
-                            mode_dropdown.model().as_ref()
-                                != Some(model.modes_list_model.upcast_ref::<gio::ListModel>())
-                        )]
-                        #[block_signal(mode_handler)]
-                        set_model: Some(&model.modes_list_model),
-                        #[track(
-                            skip_init,
-                            !model.is_static_only()
-                                && mode_dropdown.selected() != model.selected_mode_index()
-                        )]
-                        #[block_signal(mode_handler)]
-                        set_selected: model.selected_mode_index(),
 
-                        connect_selected_notify[sender] => move |dd| {
-                            let sel = dd.selected();
-                            if sel != gtk::INVALID_LIST_POSITION {
-                                sender.input(LightingViewMsg::SetModeByIndex(sel));
-                            }
-                        } @mode_handler,
+                        // Effect mode selector (hidden on static-LED models like Sayo O2C)
+                        gtk::Box {
+                            #[watch]
+                            set_visible: !model.is_static_only(),
+                            set_orientation: gtk::Orientation::Horizontal,
+                            set_spacing: 12,
+
+                            gtk::Label {
+                                set_text: "Lighting Effect:",
+                                set_width_chars: 14,
+                                set_halign: gtk::Align::Start,
+                            },
+
+                            #[name = "mode_dropdown"]
+                            gtk::DropDown {
+                                set_hexpand: true,
+                                set_model: Some(&model.modes_list_model),
+                                set_selected: model.selected_mode_index(),
+                                #[track(
+                                    skip_init,
+                                    mode_dropdown.model().as_ref()
+                                        != Some(model.modes_list_model.upcast_ref::<gio::ListModel>())
+                                )]
+                                #[block_signal(mode_handler)]
+                                set_model: Some(&model.modes_list_model),
+                                #[track(
+                                    skip_init,
+                                    !model.is_static_only()
+                                        && mode_dropdown.selected() != model.selected_mode_index()
+                                )]
+                                #[block_signal(mode_handler)]
+                                set_selected: model.selected_mode_index(),
+
+                                connect_selected_notify[sender] => move |dd| {
+                                    let sel = dd.selected();
+                                    if sel != gtk::INVALID_LIST_POSITION {
+                                        sender.input(LightingViewMsg::SetModeByIndex(sel));
+                                    }
+                                } @mode_handler,
+                            },
+                        },
+
+                        gtk::Label {
+                            #[watch]
+                            set_visible: !model.is_static_only(),
+                            set_halign: gtk::Align::Start,
+                            set_wrap: true,
+                            add_css_class: "dim-label",
+                            #[watch]
+                            set_text: model.mode.description(),
+                        },
+
+                        gtk::Label {
+                            #[watch]
+                            set_visible: model.effect_hint().is_some(),
+                            set_halign: gtk::Align::Start,
+                            set_wrap: true,
+                            add_css_class: "dim-label",
+                            #[watch]
+                            set_text: model.effect_hint().unwrap_or_default(),
+                        },
+
+                        // Night light switch
+                        gtk::ListBox {
+                            add_css_class: "boxed-list",
+                            set_selection_mode: gtk::SelectionMode::None,
+                            #[watch]
+                            set_visible: model.capabilities.has_night_light,
+
+                            adw::ActionRow {
+                                set_title: "Night Light",
+                                set_subtitle: "Keep RGB lighting active when host sleeps or powers off USB",
+
+                                add_suffix = &gtk::Switch {
+                                    set_valign: gtk::Align::Center,
+                                    set_active: model.night_light,
+                                    #[watch]
+                                    #[block_signal(night_handler)]
+                                    set_active: model.night_light,
+
+                                    connect_active_notify[sender] => move |sw| {
+                                        sender.input(LightingViewMsg::ToggleNightLight(sw.is_active()));
+                                    } @night_handler,
+                                },
+                            },
+                        },
                     },
-                },
-
-                gtk::Label {
-                    #[watch]
-                    set_visible: !model.is_static_only(),
-                    set_halign: gtk::Align::Start,
-                    set_wrap: true,
-                    add_css_class: "dim-label",
-                    #[watch]
-                    set_text: model.mode.description(),
-                },
-
-                gtk::Label {
-                    #[watch]
-                    set_visible: model.effect_hint().is_some(),
-                    set_halign: gtk::Align::Start,
-                    set_wrap: true,
-                    add_css_class: "dim-label",
-                    #[watch]
-                    set_text: model.effect_hint().unwrap_or_default(),
                 },
 
                 // Dynamic LED 1 & LED 2 Cards managed via FactoryVecDeque
@@ -589,31 +684,6 @@ impl SimpleComponent for LightingViewState {
                         },
                     }
                 },
-
-                // Night light switch
-                gtk::ListBox {
-                    add_css_class: "boxed-list",
-                    set_selection_mode: gtk::SelectionMode::None,
-                    #[watch]
-                    set_visible: model.capabilities.has_night_light,
-
-                    adw::ActionRow {
-                        set_title: "Night Light",
-                        set_subtitle: "Keep RGB lighting enabled when host computer sleeps or powers off USB",
-
-                        add_suffix = &gtk::Switch {
-                            set_valign: gtk::Align::Center,
-                            set_active: model.night_light,
-                            #[watch]
-                            #[block_signal(night_handler)]
-                            set_active: model.night_light,
-
-                            connect_active_notify[sender] => move |sw| {
-                                sender.input(LightingViewMsg::ToggleNightLight(sw.is_active()));
-                            } @night_handler,
-                        },
-                    },
-                },
             }
         }
     }
@@ -623,7 +693,7 @@ impl SimpleComponent for LightingViewState {
         root: Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
-        let (capabilities, mode, leds, speed, night_light, full_speed_mode) = init;
+        let (active_model, capabilities, mode, leds, speed, night_light, full_speed_mode) = init;
 
         let led_cards =
             FactoryVecDeque::builder()
@@ -634,7 +704,10 @@ impl SimpleComponent for LightingViewState {
                     }
                 });
 
+        let preview = LightingDiagramPreview::new();
+
         let mut model = LightingViewState {
+            active_model,
             capabilities,
             mode,
             leds,
@@ -645,10 +718,13 @@ impl SimpleComponent for LightingViewState {
             last_modes_ptr: std::ptr::null(),
             last_modes_len: 0,
             led_cards,
+            preview,
         };
         model.rebuild_modes_if_needed();
         model.sync_led_cards();
+        model.sync_preview();
 
+        let light_preview = model.preview.widget();
         let leds_row = model.led_cards.widget();
         let widgets = view_output!();
         ComponentParts { model, widgets }
@@ -657,6 +733,7 @@ impl SimpleComponent for LightingViewState {
     fn update(&mut self, message: Self::Input, sender: ComponentSender<Self>) {
         match message {
             LightingViewMsg::Sync {
+                model,
                 capabilities,
                 mode,
                 leds,
@@ -664,6 +741,7 @@ impl SimpleComponent for LightingViewState {
                 night_light,
                 full_speed_mode,
             } => {
+                self.active_model = model;
                 self.capabilities = capabilities;
                 self.mode = mode;
                 self.leds = leds;
@@ -672,12 +750,18 @@ impl SimpleComponent for LightingViewState {
                 self.full_speed_mode = full_speed_mode;
                 self.rebuild_modes_if_needed();
                 self.sync_led_cards();
+                self.sync_preview();
+            }
+            LightingViewMsg::SetPreviewActive(active) => {
+                self.preview.set_page_active(active);
             }
             LightingViewMsg::SetFullSpeed(val) => {
                 self.full_speed_mode = val;
+                self.sync_preview();
             }
             LightingViewMsg::DisableFullSpeedClicked => {
                 self.full_speed_mode = false;
+                self.sync_preview();
                 let _ = sender.output(LightingViewOutput::DisableFullSpeed);
             }
             LightingViewMsg::SetModeByIndex(idx) => {
@@ -686,6 +770,7 @@ impl SimpleComponent for LightingViewState {
                 {
                     self.mode = mode;
                     self.sync_led_cards();
+                    self.sync_preview();
                     let _ = sender.output(LightingViewOutput::ModeChanged(mode));
                 }
             }
@@ -694,18 +779,21 @@ impl SimpleComponent for LightingViewState {
                     && *slot != led
                 {
                     *slot = led;
+                    self.sync_preview();
                     let _ = sender.output(LightingViewOutput::LedChanged { index, led });
                 }
             }
             LightingViewMsg::SetFadeDelay(val) => {
                 if self.speed.fade_delay != val {
                     self.speed.fade_delay = val;
+                    self.sync_preview();
                     let _ = sender.output(LightingViewOutput::SpeedChanged(self.speed));
                 }
             }
             LightingViewMsg::SetRainbowDelay(val) => {
                 if self.speed.rainbow_delay != val {
                     self.speed.rainbow_delay = val;
+                    self.sync_preview();
                     let _ = sender.output(LightingViewOutput::SpeedChanged(self.speed));
                 }
             }
@@ -720,6 +808,7 @@ impl SimpleComponent for LightingViewState {
                 }
                 if self.speed != new_speed {
                     self.speed = new_speed;
+                    self.sync_preview();
                     let _ = sender.output(LightingViewOutput::SpeedChanged(new_speed));
                 }
             }

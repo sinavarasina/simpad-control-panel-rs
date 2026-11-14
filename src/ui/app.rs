@@ -159,7 +159,7 @@ impl SimpleComponent for AppModel {
             });
 
         let keys_view = KeysViewState::builder()
-            .launch(default_settings.keys.clone())
+            .launch((initial_model, default_settings.keys.clone()))
             .forward(sender.input_sender(), |msg| match msg {
                 KeysViewOutput::KeyUpdated { index, binding } => {
                     AppMsg::KeyChanged { index, binding }
@@ -168,6 +168,7 @@ impl SimpleComponent for AppModel {
 
         let lighting_view = LightingViewState::builder()
             .launch((
+                initial_model,
                 initial_caps,
                 default_settings.light_mode,
                 default_settings.leds.clone(),
@@ -247,6 +248,14 @@ impl SimpleComponent for AppModel {
             .stack
             .add_titled(model.about_view.widget(), Some("about"), "About");
         page4.set_icon_name(Some("help-about-symbolic"));
+
+        let lighting_sender = model.lighting_view.sender().clone();
+        widgets
+            .stack
+            .connect_visible_child_name_notify(move |stack| {
+                let active = stack.visible_child_name().as_deref() == Some("lighting");
+                let _ = lighting_sender.send(LightingViewMsg::SetPreviewActive(active));
+            });
 
         widgets.stack.set_visible_child_name("keys");
         sender.input(AppMsg::RefreshDevices);
@@ -571,10 +580,13 @@ impl AppModel {
     fn sync_editor_views(&mut self) {
         let caps = self.active_model.capabilities();
 
-        self.keys_view
-            .emit(KeysViewMsg::SyncKeys(self.current_settings.keys.clone()));
+        self.keys_view.emit(KeysViewMsg::Sync {
+            model: self.active_model,
+            keys: self.current_settings.keys.clone(),
+        });
 
         self.lighting_view.emit(LightingViewMsg::Sync {
+            model: self.active_model,
             capabilities: caps,
             mode: self.current_settings.light_mode,
             leds: self.current_settings.leds.clone(),
