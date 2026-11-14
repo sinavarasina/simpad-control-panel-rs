@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>net.bysb.simpad.controlpanel</id>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <name>SimPad Control Panel</name>
+  <summary>Configure key bindings, RGB lighting, and settings for SimPad devices</summary>
+  <developer id="net.bysb">
+    <name>SimPad Control Panel Contributors</name>
+  </developer>
+  <description>
+    <p>
+      SimPad Control Panel is a native GTK4/Libadwaita configuration utility for SimPad and SimPad Nano mechanical keypads over USB HID.
+    </p>
+  </description>
+  <url type="homepage">https://github.com/sinavarasina/simpad-control-panel-rs</url>
+  <launchable type="desktop-id">net.bysb.simpad.controlpanel.desktop</launchable>
+  <provides>
+    <binary>simpad-control-panel-rs</binary>
+  </provides>
+  <content_rating type="oars-1.1" />
+</component>

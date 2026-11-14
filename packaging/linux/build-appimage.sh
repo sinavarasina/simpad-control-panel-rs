@@ -43,7 +43,9 @@ mkdir -p \
     "$APPDIR/usr/lib/gio/modules" \
     "$APPDIR/usr/share/glib-2.0/schemas" \
     "$APPDIR/usr/share/icons/hicolor/scalable/apps" \
+    "$APPDIR/usr/share/icons/hicolor/256x256/apps" \
     "$APPDIR/usr/share/applications" \
+    "$APPDIR/usr/share/metainfo" \
     "$APPDIR/usr/share/doc/$APP_NAME"
 
 cp "$BIN_SRC" "$APPDIR/usr/bin/$APP_NAME"
@@ -53,11 +55,16 @@ install -m 755 "$SCRIPT_DIR/AppRun" "$APPDIR/AppRun"
 install -m 644 "$SCRIPT_DIR/${APP_ID}.desktop" "$APPDIR/${APP_ID}.desktop"
 install -m 644 "$SCRIPT_DIR/${APP_ID}.desktop" "$APPDIR/usr/share/applications/${APP_ID}.desktop"
 install -m 644 "$SCRIPT_DIR/${APP_ID}.svg" "$APPDIR/${APP_ID}.svg"
-install -m 644 "$SCRIPT_DIR/${APP_ID}.svg" "$APPDIR/usr/share/icons/hicolor/scalable/apps/${APP_ID}.svg"
+install -m 644 "$SCRIPT_DIR/${APP_ID}.png" "$APPDIR/${APP_ID}.png"
+ln -sf "${APP_ID}.png" "$APPDIR/.DirIcon"
+install -m 644 "$SCRIPT_DIR/${APP_ID}.appdata.xml" "$APPDIR/usr/share/metainfo/${APP_ID}.appdata.xml"
 install -m 644 "$REPO_ROOT/udev/99-simpad.rules" "$APPDIR/usr/share/doc/$APP_NAME/99-simpad.rules"
 install -m 644 "$REPO_ROOT/LICENSE" "$APPDIR/usr/share/doc/$APP_NAME/LICENSE"
 
 desktop-file-validate "$APPDIR/${APP_ID}.desktop"
+if command -v appstreamcli >/dev/null 2>&1; then
+    appstreamcli validate --no-net "$APPDIR/usr/share/metainfo/${APP_ID}.appdata.xml"
+fi
 
 echo "==> Copying GdkPixbuf loaders..."
 HOST_PIXBUF_MODULEDIR="$(pkg-config --variable=gdk_pixbuf_moduledir gdk-pixbuf-2.0 2>/dev/null || true)"
@@ -168,6 +175,11 @@ for theme in Adwaita hicolor; do
         cp -a "/usr/share/icons/$theme" "$APPDIR/usr/share/icons/"
     fi
 done
+mkdir -p \
+    "$APPDIR/usr/share/icons/hicolor/scalable/apps" \
+    "$APPDIR/usr/share/icons/hicolor/256x256/apps"
+install -m 644 "$SCRIPT_DIR/${APP_ID}.svg" "$APPDIR/usr/share/icons/hicolor/scalable/apps/${APP_ID}.svg"
+install -m 644 "$SCRIPT_DIR/${APP_ID}.png" "$APPDIR/usr/share/icons/hicolor/256x256/apps/${APP_ID}.png"
 
 ICON_CACHE_TOOL="$(command -v gtk4-update-icon-cache || command -v gtk-update-icon-cache || true)"
 if [[ -n "$ICON_CACHE_TOOL" ]]; then

@@ -117,8 +117,38 @@ button:hover {{
 }}
 
 button.flat,
-viewswitcher button {{
+viewswitcher button,
+windowcontrols button {{
     background-color: transparent;
+    border-color: transparent;
+    box-shadow: none;
+}}
+
+windowcontrols button {{
+    border-radius: 4px;
+    min-width: 38px;
+    min-height: 30px;
+    padding: 0;
+    margin: 0 1px;
+}}
+
+windowcontrols button > image {{
+    background-color: transparent;
+    border: none;
+    border-radius: 4px;
+    box-shadow: none;
+}}
+
+windowcontrols button:hover,
+windowcontrols button:hover > image {{
+    background-color: {surface_hover};
+    border-color: transparent;
+}}
+
+windowcontrols button.close:hover,
+windowcontrols button.close:hover > image {{
+    background-color: #c42b1c;
+    color: #ffffff;
     border-color: transparent;
 }}
 

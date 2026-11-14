@@ -79,38 +79,39 @@ impl SimpleComponent for AppModel {
             set_title: Some("SimPad Control Panel"),
             set_default_size: (880, 680),
 
+            #[wrap(Some)]
+            set_titlebar = &adw::HeaderBar {
+                #[wrap(Some)]
+                set_title_widget = &adw::WindowTitle {
+                    set_title: "SimPad Control Panel",
+                    #[watch]
+                    set_subtitle: &if model.pending_changes_count > 0 {
+                        format!("{} pending change(s)", model.pending_changes_count)
+                    } else {
+                        "All changes applied".to_string()
+                    },
+                },
+
+                pack_end = &gtk::Button {
+                    set_label: "Apply to Device",
+                    add_css_class: "suggested-action",
+                    #[watch]
+                    set_sensitive: model.pending_changes_count > 0 && model.connection.is_some(),
+                    connect_clicked => AppMsg::ApplyChanges,
+                },
+
+                pack_end = &gtk::Button {
+                    set_label: "Discard",
+                    #[watch]
+                    set_sensitive: model.pending_changes_count > 0,
+                    connect_clicked => AppMsg::DiscardChanges,
+                },
+            },
+
             #[name = "toast_overlay"]
             adw::ToastOverlay {
                 gtk::Box {
                     set_orientation: gtk::Orientation::Vertical,
-
-                    adw::HeaderBar {
-                        #[wrap(Some)]
-                        set_title_widget = &adw::WindowTitle {
-                            set_title: "SimPad Control Panel",
-                            #[watch]
-                            set_subtitle: &if model.pending_changes_count > 0 {
-                                format!("{} pending change(s)", model.pending_changes_count)
-                            } else {
-                                "All changes applied".to_string()
-                            },
-                        },
-
-                        pack_end = &gtk::Button {
-                            set_label: "Apply to Device",
-                            add_css_class: "suggested-action",
-                            #[watch]
-                            set_sensitive: model.pending_changes_count > 0 && model.connection.is_some(),
-                            connect_clicked => AppMsg::ApplyChanges,
-                        },
-
-                        pack_end = &gtk::Button {
-                            set_label: "Discard",
-                            #[watch]
-                            set_sensitive: model.pending_changes_count > 0,
-                            connect_clicked => AppMsg::DiscardChanges,
-                        },
-                    },
 
                     model.device_view.widget(),
 
